@@ -41,6 +41,12 @@ variable "ecr_repo_name" {
   default     = ""
 }
 
+variable "dockerfile_path" {
+  type        = string
+  description = "Path to the directory containing the Dockerfile, relative to the repo root. Required when enable_container_scan = true."
+  default     = "sample-app"
+}
+
 variable "aws_region" {
   type        = string
   description = "AWS region for all resources provisioned by this module"

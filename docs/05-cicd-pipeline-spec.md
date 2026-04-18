@@ -59,6 +59,61 @@ The consuming project's deployment pipeline takes over from ECR after Stage 3 co
 
 ---
 
+## GitHub Actions Workflow
+
+The module includes `.github/workflows/security-scan.yml` — a working workflow that also serves as a template for consuming projects.
+
+### What It Does
+
+Triggers on every `push` and `pull_request` across all branches. Runs `pre-commit run --all-files` using the same `.pre-commit-config.yaml` that CodePipeline Stage 2 uses — same tools, same behavior, same severity thresholds. Both gates are consistent by design.
+
+### Workflow
+
+```yaml
+name: security-scan
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history required for gitleaks
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: pip install pre-commit==3.7.0
+      - run: pre-commit run --all-files --show-diff-on-failure
+```
+
+### Branch Protection Setup (One-Time Per Repo)
+
+To make the GitHub Actions check a hard gate on PRs:
+
+1. GitHub → repo → **Settings** → **Branches** → **Add branch protection rule**
+2. Branch name pattern: `main`
+3. Enable: **Require a pull request before merging**
+4. Enable: **Require status checks to pass before merging**
+5. Search for and add: `Security Scan` (the job name from the workflow)
+6. Enable: **Restrict who can push to matching branches** → only allow merges via PR
+
+After this, no PR can merge to `main` until the `security-scan` workflow passes.
+
+### Consuming Projects
+
+Copy `.github/workflows/security-scan.yml` from this repo to your consuming project's `.github/workflows/` directory. Copy `.pre-commit-config.yaml` to the consuming project root and update the `bandit` path if needed (see README).
+
+---
+
 ## CodeStar Connection Setup (One-Time Manual Step)
 
 CodeStar Connections require a human GitHub OAuth authorization. Terraform can create the connection resource, but it starts in `PENDING` state. The human click in the console moves it to `AVAILABLE`.

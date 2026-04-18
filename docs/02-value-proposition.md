@@ -1,17 +1,21 @@
 # 02 — Value Proposition (aws-devsecops-pipeline-module)
 
-## Why Not GitHub Actions?
+## GitHub Actions + CodePipeline: Complementary Roles
+
+This module uses **both** GitHub Actions and CodePipeline. They serve different purposes and are not interchangeable.
 
 | Concern | GitHub Actions | CodePipeline (this module) |
 |---------|---------------|---------------------------|
-| Account boundary | Build logs and secrets leave AWS | Everything runs inside the AWS account |
-| Audit trail | GitHub UI only | Native CloudTrail — every execution, approval, and failure |
-| AWS credential management | OIDC token exchange required in every workflow | IAM role attached natively to CodeBuild — no token exchange |
-| Manual Approval gate | No built-in equivalent | Native CodePipeline approval action with SNS email |
-| Regulated environment fit | Third-party SaaS dependency | AWS-managed service, no external dependency |
-| CAB process mirror | Must be scripted/workarounded | Manual Approval is a first-class stage |
+| When it runs | On push and pull_request — pre-merge | On push to main — post-merge |
+| What it blocks | PR merge | Nothing downstream (audit gate) |
+| Account boundary | Runs outside AWS | Runs inside AWS account boundary |
+| Audit trail | GitHub UI only | Native CloudTrail |
+| AWS credential management | OIDC token exchange required | IAM role attached natively to CodeBuild |
+| Purpose | Developer feedback + PR gate | AWS-native enforcement + audit trail |
 
-**When GitHub Actions is the better choice:** Open source projects, small teams heavily invested in the GitHub ecosystem (dependabot, PR checks, Actions marketplace), multi-cloud environments. For AWS-native enterprise DevOps, CodePipeline is the correct tool.
+**GitHub Actions** runs first — it blocks bad PRs before they merge. **CodePipeline** runs second — it enforces the same checks on main with full AWS auditability and handles the optional container build/scan stage.
+
+Neither replaces the other. Removing GitHub Actions means bad code can reach main before being caught. Removing CodePipeline means scans have no AWS audit trail and no container scanning capability.
 
 ---
 
@@ -87,7 +91,7 @@ This module eliminates that inconsistency. The security gates are wired in by de
 | Snyk | Paid tier required for CI/CD integration |
 | **trivy** | Free, open source, high recall, runs in CodeBuild before ECR push, blocks on CRITICAL unfixed CVEs |
 
-**ECR Basic scanning** is still enabled on the private ECR repo as a second layer (scan-on-push). Trivy in the pipeline is the gate; ECR Basic is the audit trail.
+Trivy runs inside CodeBuild before the image reaches ECR — this is the blocking gate. Whether to enable ECR Basic scan-on-push as an additional audit layer is the consuming project's decision, not this module's responsibility.
 
 ---
 

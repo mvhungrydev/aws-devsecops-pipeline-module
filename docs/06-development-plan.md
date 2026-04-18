@@ -32,6 +32,25 @@ aws-devsecops-pipeline-module/
 
 Commit: `chore: initial directory scaffold`
 
+### Story 0.4 — GitHub Actions Workflow
+
+Create `.github/workflows/security-scan.yml` at the repo root. This workflow:
+- Triggers on every `push` and `pull_request` across all branches
+- Runs `pre-commit run --all-files` — same tools and behavior as CodePipeline Stage 2
+- Serves as a working template for consuming projects to copy
+
+Consuming projects copy this file to their own `.github/workflows/` directory and set up branch protection rules to require the `Security Scan` check before merging.
+
+Branch protection setup (consuming project, one-time):
+1. GitHub → repo → Settings → Branches → Add rule for `main`
+2. Enable: Require PR before merging
+3. Enable: Require status checks → add `Security Scan`
+4. Enable: Restrict direct pushes to main
+
+Commit: `chore: add GitHub Actions security scan workflow`
+
+---
+
 ### Story 0.2 — `.pre-commit-config.yaml` Template
 
 Create `.pre-commit-config.yaml` at the repo root. This file is the template that consuming projects copy. It must be functional in the context of a consuming project (not this module repo — this repo has no Python app to scan with bandit).

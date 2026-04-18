@@ -27,6 +27,7 @@ The scanner images are pre-built and hosted on GitHub Container Registry (ghcr.i
 | G4 | Block all HIGH+ security findings automatically | Pipeline stage fails and stops on any finding at or above threshold |
 | G5 | Optionally scan container images for CVEs | `enable_container_scan = true` adds a Build + Trivy + ECR Push stage |
 | G6 | Operate within AWS Free Tier for infrequent use | ≤ 100 CodeBuild minutes/month with S3 caching enabled |
+| G7 | Block bad code before it merges via PR | GitHub Actions workflow gates PRs; branch protection prevents merge on failure |
 
 ---
 
@@ -57,6 +58,7 @@ The scanner images are pre-built and hosted on GitHub Container Registry (ghcr.i
 | FR11 | Module provisions `.pre-commit-config.yaml` as a template that consuming projects copy to their repo root |
 | FR12 | `scripts/setup-dev.sh` (macOS) and `scripts/setup-dev.ps1` (Windows) are provided for optional local setup |
 | FR13 | Module is tagged with `v<major>.<minor>.<patch>` — consuming projects pin to a tag, not `HEAD` |
+| FR14 | `.github/workflows/security-scan.yml` is provided as a working template — triggers on push and pull_request, runs `pre-commit run --all-files` |
 
 ---
 
@@ -81,7 +83,7 @@ The scanner images are pre-built and hosted on GitHub Container Registry (ghcr.i
 | Deployment pipeline | Consuming project owns its own deployment — module stops at verified artifact |
 | Terraform Plan / Apply | Deployment orchestration is not this module's responsibility |
 | Manual Approval gate | No deployment means no gate needed — security blocks are automated |
-| PR / feature-branch pipeline | `main` branch trigger only for v1 |
+| PR blocking via CodePipeline alone | CodePipeline has no GitHub PR integration — GitHub Actions handles pre-merge gates |
 | Multi-account deployment | Single AWS account for free tier |
 | GitHub Actions | AWS-native tooling chosen for audit trail and account boundary |
 | Taint analysis for Java/C# | Documented gap — Semgrep community (pattern-based) is used |

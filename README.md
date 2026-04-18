@@ -19,27 +19,26 @@ This repo contains no application code. The Flask demo app that consumes this mo
 
 ---
 
-## Pipeline Stages
+## How the Gates Work Together
 
-**Base mode** (`enable_container_scan = false`, default):
 ```
-GitHub (source only)
-      │ CodeStar Connection
-      ▼
-CodePipeline
-  ├── Stage 1: Source         ← pull from GitHub → S3
-  └── Stage 2: Security Scan  ← gitleaks + bandit/Semgrep + checkov   [BLOCKS]
+Developer pushes / opens PR
+        │
+        ▼
+GitHub Actions (security-scan.yml)        ← PRE-MERGE GATE
+  pre-commit run --all-files
+  gitleaks + bandit/Semgrep + checkov
+  Blocks PR merge on any finding
+        │
+        │ PR approved + checks pass → merge to main
+        ▼
+CodePipeline (AWS)                        ← POST-MERGE ENFORCEMENT + AUDIT
+  Stage 1: Source     ← pull from GitHub → S3
+  Stage 2: Scan       ← same tools, AWS audit trail   [BLOCKS]
+  Stage 3: Build+Scan ← docker build + trivy + ECR    [BLOCKS, optional]
 ```
 
-**With container scanning** (`enable_container_scan = true`):
-```
-CodePipeline
-  ├── Stage 1: Source         ← pull from GitHub → S3
-  ├── Stage 2: Security Scan  ← gitleaks + bandit/Semgrep + checkov   [BLOCKS]
-  └── Stage 3: Build & Scan   ← docker build + trivy + ECR push       [BLOCKS]
-```
-
-The consuming project's deployment pipeline takes over from ECR after Stage 3. All stages run inside AWS. Every execution is logged in CloudTrail. No credentials leave the AWS account boundary.
+Both gates run the same tools via the same `.pre-commit-config.yaml`. GitHub Actions catches issues before merge. CodePipeline enforces on main with full CloudTrail auditability. Neither replaces the other.
 
 ---
 
@@ -164,7 +163,27 @@ module "pipeline" {
 }
 ```
 
-### Step 3 — Done
+### Step 3 — Set Up GitHub Actions
+
+Copy the workflow to your consuming project:
+
+```bash
+mkdir -p .github/workflows
+cp /path/to/aws-devsecops-pipeline-module/.github/workflows/security-scan.yml \
+   .github/workflows/security-scan.yml
+```
+
+Then enable branch protection:
+
+1. GitHub → repo → **Settings** → **Branches** → **Add branch protection rule**
+2. Pattern: `main`
+3. Enable: **Require a pull request before merging**
+4. Enable: **Require status checks to pass** → search for and add `Security Scan`
+5. Enable: **Restrict who can push to matching branches**
+
+Push any commit to trigger the first workflow run and confirm the check appears.
+
+### Step 4 — Done
 
 No SNS subscription, no approval email, no Terraform state configuration needed. The pipeline is self-contained — consuming projects handle their own deployment after the pipeline produces a verified artifact.
 
@@ -273,12 +292,16 @@ Copy `.pre-commit-config.yaml` from this repo to your consuming project's root, 
 
 Both scripts install `pre-commit` and register hooks in `.git/hooks/`. Hooks then run automatically on every `git commit`.
 
-### Why Local gitleaks Matters
+### Why Local pre-commit Matters
 
-For all hooks except gitleaks, local setup is a convenience (faster feedback). For **gitleaks specifically**, it prevents a worse outcome:
+**Important:** This module's pipeline runs on push to `main` — it is a post-merge gate, not a pre-merge gate. Code reaches `main` before the pipeline blocks it. Local pre-commit is the only way to catch findings before they land in the branch.
+
+For most hooks this is a convenience (faster feedback loop). For **gitleaks specifically**, local enforcement is a security requirement:
 
 - **Without local gitleaks:** A commit with a secret reaches GitHub before the pipeline blocks it. The secret is in git history and must be scrubbed — a painful, often incomplete process.
 - **With local gitleaks:** The commit is rejected before it leaves your machine. The secret never touches GitHub.
+
+**Recommendation:** Treat local pre-commit setup as mandatory, not optional, for any developer pushing to a repo protected by this module. Run `scripts/setup-dev.sh` (macOS) or `scripts/setup-dev.ps1` (Windows) as part of onboarding.
 
 ---
 
@@ -300,6 +323,9 @@ With S3 caching: approximately **12 full pipeline runs per month** within the fr
 
 ```
 aws-devsecops-pipeline-module/
+├── .github/
+│   └── workflows/
+│       └── security-scan.yml  ← GitHub Actions workflow (copy to consuming projects)
 ├── infra/
 │   └── modules/
 │       └── pipeline/          ← reusable Terraform module

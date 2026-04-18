@@ -13,6 +13,18 @@ Two artifacts:
 ## Architecture: What the Module Creates
 
 ```
+  Developer
+       │
+       │ git push / pull request
+       ▼
+  GitHub
+       │
+       ├──► GitHub Actions (security-scan.yml)          [PRE-MERGE GATE]
+       │         pre-commit run --all-files
+       │         Blocks PR merge on any finding
+       │
+       │ merge to main
+       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         Consuming Project AWS Account                       │
 │                                                                             │
@@ -60,6 +72,13 @@ Two artifacts:
 ---
 
 ## Data Flow (Numbered Steps)
+
+**Full flow (GitHub Actions + CodePipeline):**
+
+1. Developer pushes to a feature branch or opens a PR
+2. **GitHub Actions fires:** runs `pre-commit run --all-files` — gitleaks, bandit (Python), Semgrep, checkov, terraform fmt. Any failure blocks the PR merge. Developer fixes and pushes again.
+3. PR passes all checks → developer merges to `main`
+4. CodeStar Connection webhook notifies CodePipeline
 
 **Base mode (`enable_container_scan = false`):**
 
