@@ -4,9 +4,9 @@
 
 Two artifacts:
 
-1. **Scanner images** — 4 Docker images hosted on ECR Public Gallery. Each image contains the security scanning tools for a specific language. CodeBuild pulls these images at the start of Stage 2.
+1. **Scanner images** — 4 Docker images hosted on GitHub Container Registry (ghcr.io). Each image contains the security scanning tools for a specific language. CodeBuild pulls these images at the start of the Security Scan stage.
 
-2. **Terraform module** — `infra/modules/pipeline/` provisions the full CodePipeline + CodeBuild infrastructure. Consuming projects reference this module via a versioned GitHub source.
+2. **Terraform module** — `infra/modules/pipeline/` provisions a CodePipeline with security scanning stages. Consuming projects reference this module via a versioned GitHub source. The module does not own deployment — it stops at producing a verified artifact.
 
 ---
 
@@ -30,8 +30,8 @@ Two artifacts:
 │  └──────────────────────────────────────────────────────────┬─────────┘    │
 │                                                             │               │
 │  ┌──────────────────────────────────────────────────────────▼─────────┐    │
-│  │  Stage 2: Security Scan                                  BLOCKS    │    │
-│  │  CodeBuild pulls ECR Public scanner image (language-specific)      │    │
+│  │  Stage 2: Security Scan                          BLOCKS            │    │
+│  │  CodeBuild pulls ghcr.io scanner image (language-specific)        │    │
 │  │  Restores S3 cache (pre-commit envs, pip packages)                 │    │
 │  │  pre-commit run --all-files:                                       │    │
 │  │    gitleaks → bandit (Python only) → Semgrep → checkov             │    │
@@ -39,40 +39,20 @@ Two artifacts:
 │  └──────────────────────────────────────────────────────────┬─────────┘    │
 │                                                             │ pass          │
 │  ┌──────────────────────────────────────────────────────────▼─────────┐    │
-│  │  Stage 3: Build & Scan Image                             BLOCKS    │    │
+│  │  Stage 3: Build & Scan Image (enable_container_scan = true only)   │    │
+│  │  BLOCKS                                                             │    │
 │  │  CodeBuild (AWS standard image, privileged mode)                   │    │
 │  │  docker build → trivy image scan → docker push to ECR (private)   │    │
 │  │  Blocks on CRITICAL unfixed CVEs — image NOT pushed if blocked    │    │
-│  └──────────────────────────────────────────────────────────┬─────────┘    │
-│                                                             │ pass          │
-│  ┌──────────────────────────────────────────────────────────▼─────────┐    │
-│  │  Stage 4: Terraform Plan                                            │    │
-│  │  CodeBuild (AWS standard image)                                    │    │
-│  │  terraform init → terraform plan -out=tfplan                       │    │
-│  │  Saves plan text to S3 artifact bucket                             │    │
-│  └──────────────────────────────────────────────────────────┬─────────┘    │
-│                                                             │ plan saved    │
-│  ┌──────────────────────────────────────────────────────────▼─────────┐    │
-│  │  Stage 5: Manual Approval                          HUMAN GATE      │    │
-│  │  SNS email to var.approval_email                                   │    │
-│  │  Email contains: plan link, pipeline console link                  │    │
-│  │  Pipeline waits up to 7 days                                       │    │
-│  └──────────────────────────────────────────────────────────┬─────────┘    │
-│                                                             │ approved      │
-│  ┌──────────────────────────────────────────────────────────▼─────────┐    │
-│  │  Stage 6: Terraform Apply                                           │    │
-│  │  CodeBuild (AWS standard image)                                    │    │
-│  │  terraform apply tfplan → ECS service updated                      │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  Supporting resources provisioned by module:                                │
 │    S3 bucket ── pipeline artifacts + CodeBuild cache                        │
-│    SNS topic ── Manual Approval email                                       │
 │    CloudWatch Log Groups ── one per CodeBuild project, 30-day retention     │
 │    IAM roles ── one per CodeBuild project (least-privilege)                 │
 │                                                                             │
 │  External dependency (not provisioned by module):                           │
-│    ECR Public Gallery ── scanner images (pre-built, publicly pullable)      │
+│    GitHub Container Registry ── scanner images (public, no auth required)  │
 │    CodeStar Connection ARN ── passed as input variable                      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -81,14 +61,20 @@ Two artifacts:
 
 ## Data Flow (Numbered Steps)
 
+**Base mode (`enable_container_scan = false`):**
+
 1. Developer pushes code to the configured `branch` on GitHub
 2. CodeStar Connection webhook notifies CodePipeline
 3. CodePipeline pulls the source artifact from GitHub and stores it in the S3 artifact bucket
-4. **Stage 2:** CodeBuild starts using the language-specific ECR Public scanner image. Restores S3 cache. Runs `pre-commit run --all-files`. Any hook failure exits non-zero → stage FAILED → pipeline stops
-5. **Stage 3:** CodeBuild starts with AWS standard image (privileged mode). Restores Docker layer cache. Runs `docker build`. Runs `trivy image --severity CRITICAL --ignore-unfixed --exit-code 1`. If trivy exits 1 → stage FAILED → image NOT pushed to ECR. If trivy passes → `docker push` to private ECR tagged with short commit SHA. Outputs `imagedefinitions.json` and `image_uri.env` as stage artifacts
-6. **Stage 4:** CodeBuild starts with AWS standard image. Restores Terraform provider cache. Runs `terraform init` (providers from cache, state from S3 backend). Reads `image_uri.env` from Stage 3 artifact. Runs `terraform plan -var="image_uri=$IMAGE_URI" -out=tfplan`. Saves `tfplan.txt` to S3 artifact bucket. Passes `tfplan` binary to Stage 6 as artifact
-7. **Stage 5:** CodePipeline sends SNS notification to `var.approval_email`. Email contains S3 link to `tfplan.txt` and direct console link. Approver reviews plan, clicks Approve or Reject. Pipeline waits up to 7 days before timeout
-8. **Stage 6:** After approval, CodeBuild runs `terraform apply -auto-approve tfplan`. ECS service is updated with the new ECR image digest. ECS performs rolling deployment (minimum_healthy_percent = 50)
+4. **Stage 2:** CodeBuild starts using the language-specific ghcr.io scanner image. Restores S3 cache. Runs `pre-commit run --all-files`. Any hook failure exits non-zero → stage FAILED → pipeline stops
+5. All hooks pass → pipeline execution complete. Consuming project's deployment pipeline takes over from here.
+
+**Container scan mode (`enable_container_scan = true`):**
+
+Steps 1–4 are identical. Then:
+
+5. **Stage 3:** CodeBuild starts with AWS standard image (privileged mode). Restores Docker layer cache. Runs `docker build`. Runs `trivy image --severity CRITICAL --ignore-unfixed --exit-code 1`. If trivy exits 1 → stage FAILED → image NOT pushed to ECR. If trivy passes → `docker push` to private ECR tagged with short commit SHA.
+6. Pipeline execution complete. Consuming project deploys from ECR.
 
 ---
 
@@ -96,12 +82,12 @@ Two artifacts:
 
 ### Language → Image Mapping
 
-| `language` input | ECR Public Image URI | SAST Tools Included |
-|------------------|---------------------|---------------------|
-| `python` | `public.ecr.aws/mvhungrydev/security-scanner-python:latest` | Semgrep + bandit |
-| `java` | `public.ecr.aws/mvhungrydev/security-scanner-java:latest` | Semgrep |
-| `dotnet` | `public.ecr.aws/mvhungrydev/security-scanner-dotnet:latest` | Semgrep |
-| `node` | `public.ecr.aws/mvhungrydev/security-scanner-node:latest` | Semgrep |
+| `language` input | ghcr.io Image URI | SAST Tools Included |
+|------------------|------------------|---------------------|
+| `python` | `ghcr.io/mvhungrydev/security-scanner-python:latest` | Semgrep + bandit |
+| `java` | `ghcr.io/mvhungrydev/security-scanner-java:latest` | Semgrep |
+| `dotnet` | `ghcr.io/mvhungrydev/security-scanner-dotnet:latest` | Semgrep |
+| `node` | `ghcr.io/mvhungrydev/security-scanner-node:latest` | Semgrep |
 
 All 4 images include: **checkov**, **gitleaks**, **pre-commit framework**.
 
@@ -151,18 +137,19 @@ RUN pip install --no-cache-dir \
 
 bandit is Python-only tooling — including it in the Java/dotnet/node images would add install time with zero benefit.
 
-### ECR Public Bootstrap (First-Time Only)
+### ghcr.io Bootstrap (First-Time Only)
 
 Scanner images must be built and pushed before the first pipeline run. This is a one-time manual step. Full step-by-step in `README.md`. Summary:
 
-1. Create ECR Public namespace `mvhungrydev` in `us-east-1` (console: ECR → Public → Get started)
-2. `docker build -t security-scanner-python scanner-images/python/`
-3. `docker tag security-scanner-python public.ecr.aws/mvhungrydev/security-scanner-python:latest`
-4. `aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws`
-5. `docker push public.ecr.aws/mvhungrydev/security-scanner-python:latest`
-6. Repeat for java, dotnet, node
+1. Create a GitHub PAT with `write:packages` scope (GitHub → Settings → Developer settings → Personal access tokens)
+2. `echo $GITHUB_PAT | docker login ghcr.io --username mvhungrydev --password-stdin`
+3. `docker build -t security-scanner-python scanner-images/python/`
+4. `docker tag security-scanner-python ghcr.io/mvhungrydev/security-scanner-python:latest`
+5. `docker push ghcr.io/mvhungrydev/security-scanner-python:latest`
+6. Set each pushed package to **Public** visibility (GitHub → Packages → Package settings → Change visibility)
+7. Repeat for java, dotnet, node
 
-ECR Public authentication must use `--region us-east-1` regardless of your working region. This is an AWS requirement for the public registry.
+Public ghcr.io images require no credentials for CodeBuild to pull — no IAM permissions needed beyond what CodeBuild already has.
 
 ---
 
@@ -220,16 +207,12 @@ Semgrep community performs **pattern-based analysis** — dangerous function cal
 
 ## IAM Role Design
 
-Three IAM roles are provisioned by the module — one per CodeBuild project that needs distinct permissions. The Terraform Apply role extends the Plan role.
-
 ### Role 1 — Security Scan (`${app_name}-codebuild-scan-role`)
 
 ```json
 {
   "Statement": [
-    // Pull scanner image from ECR Public (requires us-east-1 auth token)
-    { "Effect": "Allow", "Action": "ecr-public:GetAuthorizationToken", "Resource": "*" },
-    { "Effect": "Allow", "Action": "sts:GetServiceBearerToken", "Resource": "*" },
+    // ghcr.io is a public registry — no IAM permissions needed to pull scanner images
 
     // Read source artifact from S3; write/read cache
     {
@@ -249,7 +232,7 @@ Three IAM roles are provisioned by the module — one per CodeBuild project that
 }
 ```
 
-### Role 2 — Build & Push (`${app_name}-codebuild-build-role`)
+### Role 2 — Build & Push (`${app_name}-codebuild-build-role`) — `enable_container_scan = true` only
 
 All permissions from Role 1, plus:
 
@@ -275,44 +258,29 @@ All permissions from Role 1, plus:
 }
 ```
 
-### Role 3 — Terraform Plan/Apply (`${app_name}-codebuild-tf-role`)
-
-All permissions from Role 1, plus:
+### Role 3 — CodePipeline (`${app_name}-codepipeline-role`)
 
 ```json
 {
   "Statement": [
-    // Terraform state (scoped to app-specific state key prefix)
+    // Start and manage CodeBuild projects
+    { "Effect": "Allow", "Action": ["codebuild:StartBuild", "codebuild:BatchGetBuilds"], "Resource": "*" },
+
+    // Read/write artifacts in S3
     {
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket", "s3:DeleteObject"],
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:GetObjectVersion", "s3:GetBucketVersioning"],
       "Resource": [
-        "arn:aws:s3:::${tfstate_bucket}",
-        "arn:aws:s3:::${tfstate_bucket}/${app_name}/*"
+        "arn:aws:s3:::${artifact_bucket}",
+        "arn:aws:s3:::${artifact_bucket}/*"
       ]
     },
 
-    // All AWS resource types needed to provision/update the consuming project's infra
-    // NOTE: These are broad by necessity — the module does not know which specific
-    // resources the consuming project uses. Scope further if the project's resource
-    // types are known and stable.
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ec2:*", "ecs:*", "ecr:*",
-        "iam:CreateRole", "iam:AttachRolePolicy", "iam:PassRole",
-        "iam:GetRole", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
-        "dynamodb:*", "ssm:*", "sns:*",
-        "logs:*", "cloudwatch:*",
-        "codepipeline:*", "codebuild:*"
-      ],
-      "Resource": "*"  // NOTE: wildcard required — Terraform manages arbitrary ARNs
-    }
+    // Use CodeStar Connection to pull from GitHub
+    { "Effect": "Allow", "Action": "codestar-connections:UseConnection", "Resource": "${codestar_connection_arn}" }
   ]
 }
 ```
-
-The `iam:PassRole` and `iam:*` wildcards are necessary for Terraform to create and attach IAM roles to ECS tasks. This is a known over-permission for Terraform apply roles — limit to specific resource ARNs if you can enumerate them at module instantiation time.
 
 ---
 
@@ -323,9 +291,7 @@ S3 caching is the primary mechanism for staying within 100 free CodeBuild minute
 | Stage | Cached Paths | Estimated Savings |
 |-------|-------------|------------------|
 | Security Scan | `~/.cache/pre-commit/**/*`, `~/.cache/pip/**/*` | ~60s on repeat runs |
-| Build & Image | `~/.docker/**/*` (Docker layer cache) | ~90s on repeat runs |
-| Terraform Plan | `infra/envs/dev/.terraform/**/*` (provider binaries) | ~45s on repeat runs |
-| Terraform Apply | `infra/envs/dev/.terraform/**/*` | ~45s on repeat runs |
+| Build & Image (optional) | `~/.docker/**/*` (Docker layer cache) | ~90s on repeat runs |
 
 Cache is stored in `${artifact_bucket}/codebuild-cache/${app_name}/` — isolated per app name so multiple pipelines sharing the same artifact bucket do not collide.
 
@@ -333,7 +299,7 @@ Cache is stored in `${artifact_bucket}/codebuild-cache/${app_name}/` — isolate
 
 | Scenario | Minutes per Run | Runs/Month (100 min budget) |
 |----------|----------------|----------------------------|
-| No caching | ~14 min | ~7 |
-| S3 caching (repeat runs) | ~8 min | ~12 |
-
-After 100 free minutes, CodeBuild charges $0.005/min on `general1.small`. One over-budget run costs ~$0.04–$0.07.
+| Scan only, no caching | ~4 min | ~25 |
+| Scan only, S3 caching | ~2 min | ~50 |
+| Scan + container, no caching | ~10 min | ~10 |
+| Scan + container, S3 caching | ~6 min | ~16 |

@@ -4,7 +4,7 @@
 ![AWS CodePipeline](https://img.shields.io/badge/AWS-CodePipeline-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-A reusable Terraform module that provisions a 6-stage AWS-native CI/CD pipeline with security gates enforced at every step. Built specifically for applications deployed to AWS — source on GitHub, container images in ECR, runtime on ECS. Supports Python, Java, C#, and Node.js via a single `language` input variable.
+A reusable Terraform module that provisions an AWS-native security scanning pipeline. Drop it into any project to get automated secret scanning, SAST, and IaC scanning on every push — with optional container vulnerability scanning. Supports Python, Java, C#, and Node.js via a single `language` input variable. Does not own deployment — stops at producing a verified artifact.
 
 ---
 
@@ -21,20 +21,25 @@ This repo contains no application code. The Flask demo app that consumes this mo
 
 ## Pipeline Stages
 
+**Base mode** (`enable_container_scan = false`, default):
 ```
 GitHub (source only)
       │ CodeStar Connection
       ▼
 CodePipeline
   ├── Stage 1: Source         ← pull from GitHub → S3
-  ├── Stage 2: Security Scan  ← gitleaks + bandit/Semgrep + checkov   [BLOCKS]
-  ├── Stage 3: Build & Scan   ← docker build + trivy + ECR push       [BLOCKS]
-  ├── Stage 4: Terraform Plan ← plan saved to S3 for review
-  ├── Stage 5: Manual Approval← SNS email + human review              [HUMAN GATE]
-  └── Stage 6: Terraform Apply← ECS updated with new image digest
+  └── Stage 2: Security Scan  ← gitleaks + bandit/Semgrep + checkov   [BLOCKS]
 ```
 
-All stages run inside AWS. Every execution is logged in CloudTrail. No credentials leave the AWS account boundary.
+**With container scanning** (`enable_container_scan = true`):
+```
+CodePipeline
+  ├── Stage 1: Source         ← pull from GitHub → S3
+  ├── Stage 2: Security Scan  ← gitleaks + bandit/Semgrep + checkov   [BLOCKS]
+  └── Stage 3: Build & Scan   ← docker build + trivy + ECR push       [BLOCKS]
+```
+
+The consuming project's deployment pipeline takes over from ECR after Stage 3. All stages run inside AWS. Every execution is logged in CloudTrail. No credentials leave the AWS account boundary.
 
 ---
 
@@ -67,41 +72,45 @@ Pre-built images, publicly pullable — no authentication required for CodeBuild
 
 | `language` value | Image URI |
 |-----------------|-----------|
-| `python` | `public.ecr.aws/mvhungrydev/security-scanner-python:latest` |
-| `java` | `public.ecr.aws/mvhungrydev/security-scanner-java:latest` |
-| `dotnet` | `public.ecr.aws/mvhungrydev/security-scanner-dotnet:latest` |
-| `node` | `public.ecr.aws/mvhungrydev/security-scanner-node:latest` |
+| `python` | `ghcr.io/mvhungrydev/security-scanner-python:latest` |
+| `java` | `ghcr.io/mvhungrydev/security-scanner-java:latest` |
+| `dotnet` | `ghcr.io/mvhungrydev/security-scanner-dotnet:latest` |
+| `node` | `ghcr.io/mvhungrydev/security-scanner-node:latest` |
 
 Each image includes: checkov, gitleaks, Semgrep, pre-commit. The Python image also includes bandit.
 
 ### First-Time Bootstrap (One-Time Manual Step)
 
-Scanner images must be built and pushed to ECR Public before any consuming project can run a pipeline. Run from this repo's root:
+Scanner images must be built and pushed to GitHub Container Registry before any consuming project can run a pipeline. Run from this repo's root:
 
 ```bash
-# 1. Create ECR Public namespace
-#    AWS Console → ECR → Public → Get started → alias: mvhungrydev
+# 1. Create a GitHub PAT with write:packages scope
+#    GitHub → Settings → Developer settings → Personal access tokens → Generate new token (classic)
+#    Scopes: write:packages
 
-# 2. Authenticate (ECR Public always requires us-east-1)
-aws ecr-public get-login-password --region us-east-1 \
-  | docker login --username AWS --password-stdin public.ecr.aws
+# 2. Authenticate
+export GITHUB_PAT=<your-token>
+echo $GITHUB_PAT | docker login ghcr.io --username mvhungrydev --password-stdin
 
 # 3. Build and push all 4 images
 docker build -t security-scanner-python scanner-images/python/
-docker tag security-scanner-python public.ecr.aws/mvhungrydev/security-scanner-python:latest
-docker push public.ecr.aws/mvhungrydev/security-scanner-python:latest
+docker tag security-scanner-python ghcr.io/mvhungrydev/security-scanner-python:latest
+docker push ghcr.io/mvhungrydev/security-scanner-python:latest
 
 docker build -t security-scanner-java scanner-images/java/
-docker tag security-scanner-java public.ecr.aws/mvhungrydev/security-scanner-java:latest
-docker push public.ecr.aws/mvhungrydev/security-scanner-java:latest
+docker tag security-scanner-java ghcr.io/mvhungrydev/security-scanner-java:latest
+docker push ghcr.io/mvhungrydev/security-scanner-java:latest
 
 docker build -t security-scanner-dotnet scanner-images/dotnet/
-docker tag security-scanner-dotnet public.ecr.aws/mvhungrydev/security-scanner-dotnet:latest
-docker push public.ecr.aws/mvhungrydev/security-scanner-dotnet:latest
+docker tag security-scanner-dotnet ghcr.io/mvhungrydev/security-scanner-dotnet:latest
+docker push ghcr.io/mvhungrydev/security-scanner-dotnet:latest
 
 docker build -t security-scanner-node scanner-images/node/
-docker tag security-scanner-node public.ecr.aws/mvhungrydev/security-scanner-node:latest
-docker push public.ecr.aws/mvhungrydev/security-scanner-node:latest
+docker tag security-scanner-node ghcr.io/mvhungrydev/security-scanner-node:latest
+docker push ghcr.io/mvhungrydev/security-scanner-node:latest
+
+# 4. Set each package to Public visibility
+#    GitHub → Packages → [package name] → Package settings → Change visibility → Public
 ```
 
 To update a scanner image, bump the version in the Dockerfile, rebuild, and push with the same tag.
@@ -126,27 +135,72 @@ One connection per AWS account can serve all pipelines.
 
 Pin to a git tag. Never use `HEAD` — a tag guarantees the module version is immutable.
 
+**Security scan only (default):**
 ```hcl
 # your-project/infra/envs/dev/main.tf
 module "pipeline" {
   source = "github.com/mvhungrydev/aws-devsecops-pipeline-module//infra/modules/pipeline?ref=v1.0.0"
 
-  language                = "python"                      # python | java | dotnet | node
+  language                = "python"   # python | java | dotnet | node
   app_name                = "my-app"
-  github_repo             = "mvhungrydev/my-app"           # owner/repo
+  github_repo             = "mvhungrydev/my-app"
   branch                  = "main"
-  ecr_repo_name           = module.ecr.repository_name
-  ecs_cluster_name        = module.ecs.cluster_name
-  ecs_service_name        = module.ecs.service_name
-  approval_email          = var.approval_email
   codestar_connection_arn = var.codestar_connection_arn
-  tfstate_bucket          = "my-app-tfstate-dev-<account-id>"
 }
 ```
 
-### Step 3 — Confirm SNS Subscription
+**With container scanning (adds Build + Trivy + ECR Push stage):**
+```hcl
+module "pipeline" {
+  source = "github.com/mvhungrydev/aws-devsecops-pipeline-module//infra/modules/pipeline?ref=v1.0.0"
 
-After `terraform apply`, AWS sends a confirmation email to `approval_email`. Click the confirmation link — approval emails will not be delivered until this is done.
+  language                = "python"   # python | java | dotnet | node
+  app_name                = "my-app"
+  github_repo             = "mvhungrydev/my-app"
+  branch                  = "main"
+  codestar_connection_arn = var.codestar_connection_arn
+  enable_container_scan   = true
+  ecr_repo_name           = module.ecr.repository_name
+}
+```
+
+### Step 3 — Done
+
+No SNS subscription, no approval email, no Terraform state configuration needed. The pipeline is self-contained — consuming projects handle their own deployment after the pipeline produces a verified artifact.
+
+---
+
+## Using with Java, C#, or Node.js
+
+Changing `language` is the only Terraform change needed. Two additional steps are required in your consuming project:
+
+### 1. Update `.pre-commit-config.yaml`
+
+Copy `.pre-commit-config.yaml` from this repo to your project root, then **remove the bandit hook** — bandit is Python-only and will error on Java/C#/Node source files:
+
+```yaml
+# REMOVE this entire block for non-Python projects
+- repo: https://github.com/PyCQA/bandit
+  rev: 1.7.9
+  hooks:
+    - id: bandit
+      args: ["-c", "pyproject.toml"]
+      files: ^sample-app/
+```
+
+The remaining hooks (gitleaks, Semgrep, checkov, terraform_fmt) work for all languages.
+
+### 2. Know the SAST gap for Java and C#
+
+This module uses **Semgrep community** for SAST — pattern-based analysis only. For Java and C#, Semgrep cannot trace user input through multiple method calls to a dangerous sink (taint analysis). This is a meaningful gap for production workloads.
+
+| Language | Gap | Recommended addition |
+|----------|-----|----------------------|
+| Java | Multi-hop injection paths missed | SpotBugs + [Find Security Bugs](https://find-sec-bugs.github.io/) |
+| C# | Cross-method taint analysis missing | [Security Code Scan](https://security-code-scan.github.io/) |
+| Node.js | Negligible — comparable rule coverage | None required |
+
+Adding these tools requires a dedicated compile-and-scan stage (they need bytecode/compiled output). This is a documented v1 limitation — not a blocker for getting started, but address it before using this pipeline for production Java or C# workloads.
 
 ---
 
@@ -158,12 +212,9 @@ After `terraform apply`, AWS sends a confirmation email to `approval_email`. Cli
 | `app_name` | string | — | Yes | Used in all resource names and tags |
 | `github_repo` | string | — | Yes | GitHub repo in `owner/repo` format |
 | `branch` | string | `"main"` | No | Pipeline trigger branch |
-| `ecr_repo_name` | string | — | Yes | Consuming project's private ECR repo name |
-| `ecs_cluster_name` | string | — | Yes | ECS cluster name for deployment target |
-| `ecs_service_name` | string | — | Yes | ECS service name for rolling deployment |
-| `approval_email` | string | — | Yes | Email address for Manual Approval SNS notification |
 | `codestar_connection_arn` | string | — | Yes | ARN of the Available CodeStar Connection to GitHub |
-| `tfstate_bucket` | string | — | Yes | S3 bucket name for Terraform state (used in Apply IAM role) |
+| `enable_container_scan` | bool | `false` | No | Adds Build + Trivy + ECR Push stage when `true` |
+| `ecr_repo_name` | string | `""` | No | Required when `enable_container_scan = true` |
 | `aws_region` | string | `"us-east-1"` | No | AWS region for all resources |
 | `environment` | string | `"dev"` | No | Environment tag applied to all module resources |
 

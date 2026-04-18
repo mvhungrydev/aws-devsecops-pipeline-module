@@ -111,21 +111,30 @@ All work in this phase happens in this repo (`aws-devsecops-pipeline-module/`). 
 
 ### Background
 
-**ECR Public authentication always uses `us-east-1`** regardless of your working region. This is an AWS requirement — the ECR Public global registry authentication endpoint is only available in `us-east-1`. The `aws ecr-public get-login-password` command must include `--region us-east-1`.
+**ghcr.io is account-independent** — images are tied to the GitHub account (`mvhungrydev`), not an AWS account. Survives AWS account closure. No pull rate limits.
 
-**ECR Public namespace (alias)** is a globally unique identifier you claim once. After setup, all your public images live under `public.ecr.aws/<your-alias>/`. The alias `mvhungrydev` must be claimed before any push.
+**Push requires a GitHub PAT** with `write:packages` scope. This is a one-time setup. The PAT is only used locally for pushing — CodeBuild pulls public images without any credentials.
+
+**Images must be set to Public after first push** — newly pushed packages default to Private on ghcr.io. Navigate to GitHub → Packages → [package name] → Package settings → Change visibility → Public.
 
 **Image rebuild policy:** Pin all tool versions in each Dockerfile. Never use `latest` or unpinned pip installs — an unpinned install could pull a breaking version and silently change scanner behavior.
 
 **Verification step (`RUN ... && ... version`):** The final `RUN` in each Dockerfile verifies that tools installed correctly. If any tool is missing or broken, the Docker build fails immediately — catching errors before the image reaches ECR.
 
-### Story 1.1 — ECR Public Namespace Setup
+### Story 1.1 — GitHub Container Registry Setup
 
-1. Open AWS Console → **ECR** → **Public** → **Get started** (or **Create repository** if you already have a public namespace)
-2. Choose alias: `mvhungrydev`
-3. Note the full public gallery URI: `public.ecr.aws/mvhungrydev`
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**
+2. Click **Generate new token (classic)**
+3. Name it `ghcr-push`, set expiration as appropriate, check `write:packages` scope
+4. Copy the token — save it somewhere safe, you cannot view it again
+5. Authenticate Docker locally:
 
-One-time setup — the namespace persists. You do not need to create individual repositories in advance; ECR Public creates them on first push.
+```bash
+export GITHUB_PAT=<your-token>
+echo $GITHUB_PAT | docker login ghcr.io --username mvhungrydev --password-stdin
+```
+
+One-time setup per machine. Repositories are created automatically on first push — no pre-creation needed.
 
 ### Story 1.2 — Python Scanner Image
 
@@ -155,21 +164,22 @@ RUN gitleaks version && bandit --version && semgrep --version && checkov --versi
 Build and push:
 
 ```bash
-# Authenticate (always us-east-1 for ECR Public)
-aws ecr-public get-login-password --region us-east-1 \
-  | docker login --username AWS --password-stdin public.ecr.aws
+# Authenticate (one-time per machine — see Story 1.1)
+echo $GITHUB_PAT | docker login ghcr.io --username mvhungrydev --password-stdin
 
 # Build
 docker build -t security-scanner-python scanner-images/python/
 
 # Tag
-docker tag security-scanner-python public.ecr.aws/mvhungrydev/security-scanner-python:latest
+docker tag security-scanner-python ghcr.io/mvhungrydev/security-scanner-python:latest
 
 # Push
-docker push public.ecr.aws/mvhungrydev/security-scanner-python:latest
+docker push ghcr.io/mvhungrydev/security-scanner-python:latest
 ```
 
-Verify: navigate to ECR Public gallery → confirm image appears.
+After push: GitHub → Packages → security-scanner-python → Package settings → Change visibility → **Public**
+
+Verify: `docker pull ghcr.io/mvhungrydev/security-scanner-python:latest` (unauthenticated — confirms public visibility).
 
 ### Story 1.3 — Java, dotnet, Node Scanner Images
 
@@ -197,9 +207,9 @@ RUN gitleaks version && semgrep --version && checkov --version
 ```
 
 Build and push each image (same pattern as Story 1.2):
-- `security-scanner-java` → `public.ecr.aws/mvhungrydev/security-scanner-java:latest`
-- `security-scanner-dotnet` → `public.ecr.aws/mvhungrydev/security-scanner-dotnet:latest`
-- `security-scanner-node` → `public.ecr.aws/mvhungrydev/security-scanner-node:latest`
+- `security-scanner-java` → `ghcr.io/mvhungrydev/security-scanner-java:latest`
+- `security-scanner-dotnet` → `ghcr.io/mvhungrydev/security-scanner-dotnet:latest`
+- `security-scanner-node` → `ghcr.io/mvhungrydev/security-scanner-node:latest`
 
 ---
 
@@ -209,52 +219,54 @@ All work in `infra/modules/pipeline/`. No `envs/` directory in this repo — the
 
 ### Background
 
-**Terraform module vs root module:** A module in `infra/modules/pipeline/` cannot be run with `terraform apply` directly — it has no backend, no provider block, no input values. It must be called from a root module (an `envs/dev/` directory with `main.tf`, `backend.tf`, and `terraform.tfvars`). Validation (`terraform validate`) works from the module directory; planning and applying do not.
+**Module scope:** This module provisions a security scanning pipeline only. It does not own deployment, Terraform plan/apply, or ECS updates. The pipeline stops at producing a verified artifact (scan pass, or scanned image in ECR when `enable_container_scan = true`). The consuming project handles everything after.
 
-**CodeBuild buildspecs as inline strings:** The buildspec YAML can be embedded directly in the `aws_codebuild_project` resource via the `buildspec` argument (as a heredoc string) or stored as files and referenced with `file()`. Using `file("${path.module}/buildspecs/scan.yml")` keeps the YAML readable and separately diffable. `path.module` resolves to the module directory regardless of where the root module is.
+**Terraform module vs root module:** A module in `infra/modules/pipeline/` cannot be run with `terraform apply` directly — it has no backend, no provider block, no input values. Validation (`terraform validate`) works from the module directory; planning and applying do not.
 
-**CodePipeline artifact passing:** Each stage declares input and output artifacts by name. The names are arbitrary strings — they just need to match between the producing stage's `output_artifacts` and the consuming stage's `input_artifacts`. Once artifacts are in S3, CodeBuild accesses them via the `$CODEBUILD_SRC_DIR` and `$CODEBUILD_SRC_DIR_<ArtifactName>` environment variables.
+**CodeBuild buildspecs as inline strings:** Using `file("${path.module}/buildspecs/scan.yml")` keeps the YAML readable and separately diffable. `path.module` resolves to the module directory regardless of where the root module is.
 
-**SNS email subscription confirmation:** Terraform creates the SNS subscription, which triggers an AWS confirmation email. The subscription is `PENDING` until the subscriber clicks the confirmation link. The module cannot automate this step.
+**`dynamic` blocks for optional stages:** The Build + Trivy stage is added via a Terraform `dynamic` block — it only exists in the pipeline when `var.enable_container_scan = true`. The associated CodeBuild project and IAM role are also conditionally created with `count = var.enable_container_scan ? 1 : 0`.
 
-**CodeStar Connection ARN:** The connection must already exist in `AVAILABLE` state when `terraform apply` runs. Terraform creates the `aws_codepipeline` resource which references the connection ARN — if the connection is `PENDING`, the pipeline creation will succeed but the pipeline will fail at Stage 1 until the connection is confirmed.
+**CodeStar Connection ARN:** The connection must already exist in `AVAILABLE` state when `terraform apply` runs. If the connection is `PENDING`, the pipeline creation will succeed but will fail at Stage 1 until the connection is confirmed.
 
-### Story 2.1 — `variables.tf`
+### Story 2.1 — `variables.tf` ✓ Done
 
 Define all input variables with types, descriptions, and validations:
 - `language` — validated against `["python", "java", "dotnet", "node"]`
-- `app_name`, `github_repo`, `branch`, `ecr_repo_name`, `ecs_cluster_name`, `ecs_service_name` — strings
-- `approval_email`, `codestar_connection_arn`, `tfstate_bucket` — strings, no defaults
+- `app_name`, `github_repo`, `branch`, `codestar_connection_arn` — required strings
+- `enable_container_scan` — bool, default `false`
+- `ecr_repo_name` — string, default `""` (required when `enable_container_scan = true`)
 - `aws_region` — string, default `"us-east-1"`
 - `environment` — string, default `"dev"`
 
-### Story 2.2 — `scanner_images.tf`
+### Story 2.2 — `scanner_images.tf` ✓ Done
 
 Define the language-to-image locals map:
 
 ```hcl
 locals {
   scanner_images = {
-    python = "public.ecr.aws/mvhungrydev/security-scanner-python:latest"
-    java   = "public.ecr.aws/mvhungrydev/security-scanner-java:latest"
-    dotnet = "public.ecr.aws/mvhungrydev/security-scanner-dotnet:latest"
-    node   = "public.ecr.aws/mvhungrydev/security-scanner-node:latest"
+    python = "ghcr.io/mvhungrydev/security-scanner-python:latest"
+    java   = "ghcr.io/mvhungrydev/security-scanner-java:latest"
+    dotnet = "ghcr.io/mvhungrydev/security-scanner-dotnet:latest"
+    node   = "ghcr.io/mvhungrydev/security-scanner-node:latest"
   }
 }
 ```
 
 Validate: `terraform validate` from `infra/modules/pipeline/` — confirms HCL syntax is valid.
 
-### Story 2.3 — `iam.tf` (3 IAM Roles)
+### Story 2.3 — `iam.tf` (2–3 IAM Roles)
 
-Create 3 `aws_iam_role` resources with `aws_iam_role_policy` inline policies:
-- `${var.app_name}-codebuild-scan-role` — ECR Public pull + S3 + CloudWatch
-- `${var.app_name}-codebuild-build-role` — scan role permissions + private ECR push
-- `${var.app_name}-codebuild-tf-role` — scan role permissions + S3 state + full infra
+Create IAM roles with `aws_iam_role_policy` inline policies:
+
+- `${var.app_name}-codebuild-scan-role` — S3 artifact read/write + CloudWatch
+- `${var.app_name}-codebuild-build-role` — scan role permissions + private ECR push (`count = var.enable_container_scan ? 1 : 0`)
+- `${var.app_name}-codepipeline-role` — CodeBuild start + S3 + CodeStar connection use
 
 IAM permissions reference: see `docs/03-technical-design.md` IAM Role Design section for the full JSON.
 
-All role ARNs scoped to specific resources where possible. The Terraform role uses `Resource: "*"` for resource provisioning — this is expected and documented.
+No ECR Public permissions needed — ghcr.io scanner images are pulled as public images without IAM.
 
 ### Story 2.4 — S3 Artifact Bucket + CodeBuild Projects
 
@@ -266,7 +278,7 @@ In `main.tf`:
 - `aws_s3_bucket_lifecycle_configuration` — expire objects after 30 days
 - `aws_s3_bucket_policy` — CodePipeline and CodeBuild access
 
-**4 CodeBuild Projects:**
+**Scan CodeBuild Project (always created):**
 
 ```hcl
 resource "aws_codebuild_project" "scan" {
@@ -302,36 +314,53 @@ resource "aws_codebuild_project" "scan" {
 }
 ```
 
-Build project differs: `privileged_mode = true`, AWS standard image `aws/codebuild/standard:7.0`, `ECR_REPO` env var injected.
+**Build CodeBuild Project (`enable_container_scan = true` only):**
 
-Plan and Apply projects: AWS standard image, `TF_VERSION` and `ENV` env vars, `ARTIFACT_BUCKET` env var (plan only).
+`count = var.enable_container_scan ? 1 : 0`, `privileged_mode = true`, AWS standard image `aws/codebuild/standard:7.0`, `ECR_REPO` and `AWS_REGION` env vars injected.
 
-### Story 2.5 — SNS Topic + CloudWatch Log Groups
+### Story 2.5 — CloudWatch Log Groups + `outputs.tf`
+
+**CloudWatch Log Groups:**
 
 ```hcl
-resource "aws_sns_topic" "approval" {
-  name = "${var.app_name}-pipeline-approval"
-}
-
-resource "aws_sns_topic_subscription" "approval_email" {
-  topic_arn = aws_sns_topic.approval.arn
-  protocol  = "email"
-  endpoint  = var.approval_email
-}
-
 resource "aws_cloudwatch_log_group" "scan" {
   name              = "/aws/codebuild/${var.app_name}-security-scan"
   retention_in_days = 30
 }
-# Repeat for build, plan, apply log groups
+
+# Build log group — only when enable_container_scan = true
+resource "aws_cloudwatch_log_group" "build" {
+  count             = var.enable_container_scan ? 1 : 0
+  name              = "/aws/codebuild/${var.app_name}-build-scan"
+  retention_in_days = 30
+}
 ```
 
-### Story 2.6 — `aws_codepipeline` (6 Stages)
+**`outputs.tf`:**
+
+```hcl
+output "pipeline_name" {
+  value       = aws_codepipeline.this.name
+  description = "CodePipeline name — for console navigation"
+}
+
+output "artifact_bucket_name" {
+  value       = aws_s3_bucket.artifacts.bucket
+  description = "S3 artifact bucket name"
+}
+
+output "artifact_bucket_arn" {
+  value       = aws_s3_bucket.artifacts.arn
+  description = "S3 artifact bucket ARN"
+}
+```
+
+### Story 2.6 — `aws_codepipeline` (2–3 Stages)
 
 ```hcl
 resource "aws_codepipeline" "this" {
   name     = "${var.app_name}-pipeline"
-  role_arn = aws_iam_role.codepipeline.arn  # note: a 4th role needed for CodePipeline itself
+  role_arn = aws_iam_role.codepipeline.arn
 
   artifact_store {
     location = aws_s3_bucket.artifacts.bucket
@@ -358,102 +387,36 @@ resource "aws_codepipeline" "this" {
   stage {
     name = "SecurityScan"
     action {
-      name             = "SecurityScan"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["SourceArtifact"]
-      configuration    = { ProjectName = aws_codebuild_project.scan.name }
-    }
-  }
-
-  stage {
-    name = "BuildAndScanImage"
-    action {
-      name             = "BuildAndScanImage"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["SourceArtifact"]
-      output_artifacts = ["BuildArtifact"]
-      configuration    = { ProjectName = aws_codebuild_project.build.name }
-    }
-  }
-
-  stage {
-    name = "TerraformPlan"
-    action {
-      name             = "TerraformPlan"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["SourceArtifact", "BuildArtifact"]
-      output_artifacts = ["PlanArtifact"]
-      configuration = {
-        ProjectName          = aws_codebuild_project.plan.name
-        PrimarySource        = "SourceArtifact"
-      }
-    }
-  }
-
-  stage {
-    name = "ManualApproval"
-    action {
-      name     = "ManualApproval"
-      category = "Approval"
-      owner    = "AWS"
-      provider = "Manual"
-      version  = "1"
-      configuration = {
-        NotificationArn = aws_sns_topic.approval.arn
-        CustomData      = "Review the Terraform plan before approving deployment."
-      }
-    }
-  }
-
-  stage {
-    name = "TerraformApply"
-    action {
-      name            = "TerraformApply"
+      name            = "SecurityScan"
       category        = "Build"
       owner           = "AWS"
       provider        = "CodeBuild"
       version         = "1"
-      input_artifacts = ["SourceArtifact", "PlanArtifact"]
-      configuration = {
-        ProjectName   = aws_codebuild_project.apply.name
-        PrimarySource = "SourceArtifact"
+      input_artifacts = ["SourceArtifact"]
+      configuration   = { ProjectName = aws_codebuild_project.scan.name }
+    }
+  }
+
+  dynamic "stage" {
+    for_each = var.enable_container_scan ? [1] : []
+    content {
+      name = "BuildAndScanImage"
+      action {
+        name             = "BuildAndScanImage"
+        category         = "Build"
+        owner            = "AWS"
+        provider         = "CodeBuild"
+        version          = "1"
+        input_artifacts  = ["SourceArtifact"]
+        output_artifacts = ["BuildArtifact"]
+        configuration    = { ProjectName = aws_codebuild_project.build[0].name }
       }
     }
   }
 }
 ```
 
-**Note:** CodePipeline itself needs an IAM role (`aws_iam_role.codepipeline`) with permissions to call CodeBuild, CodeStar, S3, and SNS. This is a 4th role not covered in `iam.tf` — add it there or in `main.tf`.
-
-### Story 2.7 — `outputs.tf`
-
-```hcl
-output "pipeline_name" {
-  value       = aws_codepipeline.this.name
-  description = "CodePipeline name — for console navigation"
-}
-
-output "artifact_bucket_name" {
-  value       = aws_s3_bucket.artifacts.bucket
-  description = "S3 artifact bucket name"
-}
-
-output "artifact_bucket_arn" {
-  value       = aws_s3_bucket.artifacts.arn
-  description = "S3 artifact bucket ARN"
-}
-```
-
-### Story 2.8 — Terraform Validation
+### Story 2.7 — Terraform Validation
 
 Run from `infra/modules/pipeline/`:
 
@@ -469,7 +432,7 @@ Fix any checkov findings that are not acceptable. Add `#checkov:skip=<rule>` inl
 
 ## Phase 3 — Integration Test
 
-The pipeline module cannot be tested in isolation — it requires a consuming project with VPC, ECS, ECR, and a CodeStar Connection.
+The pipeline module cannot be tested in isolation — it requires a consuming project with a CodeStar Connection and (for container scan) a private ECR repo.
 
 **Integration test target:** `sample-python-app`. After Phase 2 (pipeline module stories) and the corresponding Phase 2 (core infrastructure stories) in `sample-python-app`, wire the pipeline module in and run it end-to-end.
 
@@ -481,12 +444,12 @@ See `sample-python-app/docs/06-development-plan.md` — Story 3.6 "Wire Pipeline
 
 ### Story 4.1 — `README.md`
 
-Complete the module repo README with these sections (per `CONTEXT.md` in `sample-python-app/`):
+Complete the module repo README with these sections:
 
-1. **Scanner image bootstrap** — step-by-step manual push to ECR Public
+1. **Scanner image bootstrap** — step-by-step manual push to ghcr.io
 2. **SAST gap documentation** — Semgrep community vs taint analysis, affected languages, production recommendations
 3. **Local dev setup** — `scripts/setup-dev.sh` and `setup-dev.ps1`, why gitleaks locally matters
-4. **How to consume the module** — `source` reference with example
+4. **How to consume the module** — `source` reference with examples (base + container scan)
 5. **Module input variables reference table** — all variables, types, defaults, descriptions
 6. **Module versioning** — git tag convention, `terraform init -upgrade` process
 

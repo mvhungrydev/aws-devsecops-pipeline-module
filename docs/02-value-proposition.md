@@ -29,11 +29,10 @@ This module eliminates that inconsistency. The security gates are wired in by de
 |-----------|-------------|------------|
 | Security scanning | Forgotten, inconsistent | Enforced on every push to `main` |
 | Multi-language support | Per-project decision | Single `language` variable selects correct scanner image |
-| Scanner image management | Build on every run or manage separately | Pre-built images on ECR Public Gallery — zero setup for consumers |
-| IaC scanning | Typically skipped | checkov runs on every `terraform plan` |
-| Container CVE scanning | Often skipped | trivy blocks CRITICAL CVEs before ECR push |
-| Human approval gate | Manual console configuration | Provisioned by module — SNS + S3 plan link included |
-| Reusability | Copy-paste | `module "pipeline"` call with 8 inputs |
+| Scanner image management | Build on every run or manage separately | Pre-built images on GitHub Container Registry (ghcr.io) — zero setup for consumers |
+| IaC scanning | Typically skipped | checkov runs on every push to main |
+| Container CVE scanning | Often skipped | trivy blocks CRITICAL CVEs before ECR push (`enable_container_scan = true`) |
+| Reusability | Copy-paste | `module "pipeline"` call with ≤ 8 inputs |
 | Versioning | None | Git tags — pin to `?ref=v1.0.0` |
 
 ---
@@ -102,6 +101,21 @@ This module eliminates that inconsistency. The security gates are wired in by de
 | **Semgrep community** | Source-only, no compilation, unified tool across all 4 languages, active rule registry |
 
 **Acknowledged gap:** Semgrep community performs pattern-based analysis only. It does not trace user input flowing through method calls to a dangerous sink (taint analysis). This gap is meaningful for Java and C# in production environments. The gap is documented in the module README — production users of Java/C# should add SpotBugs + FindSecBugs or Security Code Scan to the pipeline.
+
+---
+
+### Scanner Image Registry: GitHub Container Registry (ghcr.io)
+
+| Alternative | Rate Limits | Auth to Pull (public) | Account Dependency | Why Not |
+|-------------|-------------|----------------------|-------------------|---------|
+| ECR Public Gallery | None | No | AWS account — images lost on account closure | Tied to the AWS account being used for learning; not portable |
+| Docker Hub | 100–200 pulls/6h (free tier) | No | Docker Hub account | Rate limits are a real risk for CodeBuild — multiple simultaneous pipeline runs could get throttled |
+| Quay.io | None | No | Red Hat account | Less familiar; no meaningful advantage over ghcr.io |
+| **GitHub Container Registry (ghcr.io)** | None | No (public images) | GitHub account | — |
+
+**Decision:** ghcr.io — images live at `ghcr.io/mvhungrydev/`, tied to GitHub which is already the source of truth for all code. Survives any AWS account closure. No pull rate limits. Public images require no credentials for CodeBuild to pull — simpler IAM (no `ecr-public:GetAuthorizationToken` needed). Push via a GitHub Personal Access Token (PAT) with `write:packages` scope.
+
+**When ECR Public is better:** Teams that want all artifacts inside AWS and have a stable, long-lived AWS account (e.g., enterprise production). For a portfolio project where the AWS account may be closed and reopened, ghcr.io is the more durable choice.
 
 ---
 
