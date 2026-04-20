@@ -1,0 +1,38 @@
+version: 0.2
+
+# ECR_REPO and DOCKERFILE_PATH are injected by Terraform at CodeBuild project creation time.
+# AWS_REGION defaults to us-east-1 but is overridden by the Terraform environment_variable block.
+
+phases:
+  pre_build:
+    commands:
+      # Authenticate to private ECR — token is valid for 12 hours
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+      # Short commit SHA is used as the image tag — immutable and traceable to the exact commit
+      - COMMIT_SHA=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-8)
+      - IMAGE_URI=$ECR_REPO:$COMMIT_SHA
+  build:
+    commands:
+      # DOCKERFILE_PATH is the directory containing the Dockerfile, relative to repo root
+      - docker build -t $IMAGE_URI $DOCKERFILE_PATH/
+  post_build:
+    commands:
+      # Block on CRITICAL unfixed CVEs.
+      # --ignore-unfixed: CVEs with no available patch do not block — they are logged for visibility.
+      # --exit-code 1: image is NOT pushed if this command exits 1.
+      - trivy image --severity CRITICAL --ignore-unfixed --exit-code 1 $IMAGE_URI
+      - echo "Trivy scan passed — pushing image to ECR"
+      - docker push $IMAGE_URI
+      # These artifacts are passed to the consuming project's deployment pipeline
+      - echo "IMAGE_URI=$IMAGE_URI" > image_uri.env
+      - printf '[{"name":"app","imageUri":"%s"}]' "$IMAGE_URI" > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - image_uri.env
+
+cache:
+  paths:
+    # Docker layer cache — avoids re-pulling base image layers on repeat runs (~90s savings)
+    - '/root/.docker/**/*'

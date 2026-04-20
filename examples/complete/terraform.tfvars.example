@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and fill in real values. Never commit terraform.tfvars.
+
+# ── Required ──────────────────────────────────────────────────────────────────
+app_name                = "my-app"
+language                = "python"          # python | java | dotnet | node
+github_repo             = "myorg/my-app"    # owner/repo format
+codestar_connection_arn = "arn:aws:codestar-connections:us-east-1:123456789012:connection/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# ── Optional ──────────────────────────────────────────────────────────────────
+branch      = "main"
+aws_region  = "us-east-1"
+environment = "dev"
+
+# ── Container scan (Stage 3) — leave false to use Source → SecurityScan only ──
+enable_container_scan = false
+ecr_repo_name         = ""          # required when enable_container_scan = true
+dockerfile_path       = "sample-app" # directory with Dockerfile, relative to repo root

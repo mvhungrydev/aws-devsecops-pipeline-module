@@ -175,24 +175,18 @@ cache:
 ```yaml
 version: 0.2
 
-env:
-  variables:
-    ECR_REPO: ""         # injected by Terraform module (the consuming project's private ECR URL)
-    AWS_REGION: "us-east-1"
-
 phases:
   pre_build:
     commands:
-      # Authenticate to private ECR for push
+      # ECR_REPO and DOCKERFILE_PATH are injected by Terraform at CodeBuild project creation time
       - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
       # Short commit SHA used as image tag — immutable, traceable to exact commit
       - COMMIT_SHA=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-8)
-      - IMAGE_TAG=$COMMIT_SHA
-      - IMAGE_URI=$ECR_REPO:$IMAGE_TAG
+      - IMAGE_URI=$ECR_REPO:$COMMIT_SHA
   build:
     commands:
-      # Dockerfile expected at sample-app/Dockerfile in the consuming project
-      - docker build -t $IMAGE_URI sample-app/
+      # DOCKERFILE_PATH is the directory containing the Dockerfile, relative to repo root
+      - docker build -t $IMAGE_URI $DOCKERFILE_PATH/
   post_build:
     commands:
       # Block on CRITICAL unfixed CVEs — image is NOT pushed if this exits 1

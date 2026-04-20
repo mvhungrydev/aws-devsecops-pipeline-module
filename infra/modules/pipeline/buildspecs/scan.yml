@@ -1,0 +1,27 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      # pre-commit is pre-installed in the scanner image — this phase is a no-op
+      # but is kept for visibility: $CODEBUILD_BUILD_IMAGE shows which image ran
+      - echo "Scanner image: $CODEBUILD_BUILD_IMAGE"
+  pre_build:
+    commands:
+      - echo "Running security scan (language: $LANGUAGE)"
+  build:
+    commands:
+      # --show-diff-on-failure prints the specific lines that triggered each finding.
+      # pre-commit exits non-zero on any hook failure — CodeBuild propagates the exit code.
+      # CodePipeline marks the stage FAILED and stops execution.
+      - pre-commit run --all-files --show-diff-on-failure
+  post_build:
+    commands:
+      - echo "Security scan completed successfully"
+
+cache:
+  paths:
+    # pre-commit hook environments — avoids reinstalling tools on every run (~60s savings)
+    - '/root/.cache/pre-commit/**/*'
+    # pip package cache — avoids re-downloading Python packages
+    - '/root/.cache/pip/**/*'
