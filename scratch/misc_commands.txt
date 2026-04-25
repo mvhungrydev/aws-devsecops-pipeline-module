@@ -1,0 +1,1 @@
+checkov -d infra/ -o json > scratch/checkov-results-$(date +%Y%m%d-%H%M).json  

@@ -13,6 +13,10 @@ locals {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_s3_bucket" "artifacts" {
+  # checkov:skip=CKV_AWS_145: SSE-S3 is sufficient; KMS CMK costs $1/key/month with no free tier
+  # checkov:skip=CKV_AWS_18: Access logging requires a second bucket; covered by CloudTrail at account level if needed
+  # checkov:skip=CKV_AWS_144: Artifacts are ephemeral and regenerated on each run; CRR adds cost with no recovery value
+  # checkov:skip=CKV2_AWS_62: Pipeline artifact bucket; CodePipeline manages triggers — S3 event notifications have no consumer
   bucket        = "${var.app_name}-pipeline-artifacts-${data.aws_caller_identity.current.account_id}"
   force_destroy = false
 
@@ -53,6 +57,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
     noncurrent_version_expiration {
       noncurrent_days = 7
     }
+
+    # Abort incomplete multipart uploads after 1 day to prevent
+    # abandoned uploads from silently accumulating storage charges.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
   }
 }
 
@@ -85,6 +95,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_log_group" "scan" {
+  # checkov:skip=CKV_AWS_158: CloudWatch default encryption is sufficient; KMS CMK costs $1/key/month with no free tier
+  # checkov:skip=CKV_AWS_338: 30-day retention is intentional — build logs are verbose and CloudWatch storage is $0.03/GB/month
   name              = "/aws/codebuild/${var.app_name}-security-scan"
   retention_in_days = 30
 
@@ -115,6 +127,7 @@ resource "aws_cloudwatch_log_group" "build" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_codebuild_project" "scan" {
+  # checkov:skip=CKV_AWS_147: Artifacts encrypted at rest via S3 SSE-S3; additional CMK adds $1/key/month with no added value
   name         = "${var.app_name}-security-scan"
   description  = "Security scan stage: gitleaks, Semgrep, checkov, bandit (Python)"
   service_role = aws_iam_role.codebuild_scan.arn
@@ -237,6 +250,7 @@ resource "aws_codebuild_project" "build" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_codepipeline" "this" {
+  # checkov:skip=CKV_AWS_219: Artifact bucket uses SSE-S3 encryption; KMS CMK adds $1/key/month with no added value for transient artifacts
   name     = "${var.app_name}-pipeline"
   role_arn = aws_iam_role.codepipeline.arn
 
