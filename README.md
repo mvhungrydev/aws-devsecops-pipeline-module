@@ -65,7 +65,7 @@ This pipeline uses **Semgrep community** for multi-language SAST. Semgrep perfor
 
 ---
 
-## Scanner Images (ECR Public Gallery)
+## Scanner Images (GitHub Container Registry)
 
 Pre-built images, publicly pullable — no authentication required for CodeBuild to pull.
 
@@ -116,6 +116,21 @@ To update a scanner image, bump the version in the Dockerfile, rebuild, and push
 
 ---
 
+## Prerequisites
+
+Before wiring up a consuming project, make sure you have:
+
+| Requirement | Notes |
+|-------------|-------|
+| Terraform >= 1.10 | `terraform -version` to check |
+| AWS CLI configured | `aws sts get-caller-identity` to verify credentials |
+| GitHub account | Repo must be on GitHub — CodeStar Connections only supports GitHub |
+| AWS account | Pipelines are created in the consuming project's account |
+
+No Docker required for consuming the module — Docker is only needed if you're rebuilding the scanner images themselves.
+
+---
+
 ## Consuming This Module
 
 ### Step 1 — CodeStar Connection (One-Time Per AWS Account)
@@ -132,6 +147,8 @@ One connection per AWS account can serve all pipelines.
 
 ### Step 2 — Call the Module
 
+A fully worked example is in [`examples/complete/`](examples/complete/) — copy `main.tf` and `terraform.tfvars.example` to your project's `infra/envs/dev/` and fill in the values.
+
 Pin to a git tag. Never use `HEAD` — a tag guarantees the module version is immutable.
 
 **Security scan only (default):**
@@ -142,26 +159,46 @@ module "pipeline" {
 
   language                = "python"   # python | java | dotnet | node
   app_name                = "my-app"
-  github_repo             = "mvhungrydev/my-app"
-  branch                  = "main"
+  github_repo             = "your-org/my-app"
+  branch                  = "main"     # pipeline triggers on push to this branch
   codestar_connection_arn = var.codestar_connection_arn
 }
 ```
 
 **With container scanning (adds Build + Trivy + ECR Push stage):**
+
+> **Prerequisite:** The ECR private repository must already exist before running `terraform apply`. This module does not create the ECR repo — create it separately and pass the name in.
+
 ```hcl
 module "pipeline" {
   source = "github.com/mvhungrydev/aws-devsecops-pipeline-module//infra/modules/pipeline?ref=v1.0.0"
 
-  language                = "python"   # python | java | dotnet | node
+  language                = "python"
   app_name                = "my-app"
-  github_repo             = "mvhungrydev/my-app"
+  github_repo             = "your-org/my-app"
   branch                  = "main"
   codestar_connection_arn = var.codestar_connection_arn
   enable_container_scan   = true
-  ecr_repo_name           = module.ecr.repository_name
+  ecr_repo_name           = "my-app"          # must match your existing ECR repo name
+  dockerfile_path         = "."               # directory containing your Dockerfile, relative to repo root
 }
 ```
+
+**Deploy:**
+```bash
+cd your-project/infra/envs/dev/
+
+# First time — fetches the module from GitHub
+terraform init
+
+# Preview what will be created
+terraform plan -var-file=terraform.tfvars
+
+# Create the pipeline
+terraform apply -var-file=terraform.tfvars
+```
+
+After `terraform apply`, push a commit to your configured `branch` to trigger the first pipeline run.
 
 ### Step 3 — Set Up GitHub Actions
 
@@ -176,7 +213,7 @@ cp /path/to/aws-devsecops-pipeline-module/.github/workflows/security-scan.yml \
 Then enable branch protection:
 
 1. GitHub → repo → **Settings** → **Branches** → **Add branch protection rule**
-2. Pattern: `main`
+2. Pattern: match your `branch` variable value (e.g. `main`, `develop`)
 3. Enable: **Require a pull request before merging**
 4. Enable: **Require status checks to pass** → search for and add `Security Scan`
 5. Enable: **Restrict who can push to matching branches**
@@ -233,7 +270,8 @@ Adding these tools requires a dedicated compile-and-scan stage (they need byteco
 | `branch` | string | `"main"` | No | Pipeline trigger branch |
 | `codestar_connection_arn` | string | — | Yes | ARN of the Available CodeStar Connection to GitHub |
 | `enable_container_scan` | bool | `false` | No | Adds Build + Trivy + ECR Push stage when `true` |
-| `ecr_repo_name` | string | `""` | No | Required when `enable_container_scan = true` |
+| `ecr_repo_name` | string | `""` | No | Required when `enable_container_scan = true` — must match existing ECR repo name |
+| `dockerfile_path` | string | `"."` | No | Directory containing your Dockerfile, relative to repo root. Required when `enable_container_scan = true` |
 | `aws_region` | string | `"us-east-1"` | No | AWS region for all resources |
 | `environment` | string | `"dev"` | No | Environment tag applied to all module resources |
 
@@ -294,14 +332,12 @@ Both scripts install `pre-commit` and register hooks in `.git/hooks/`. Hooks the
 
 ### Why Local pre-commit Matters
 
-**Important:** This module's pipeline runs on push to `main` — it is a post-merge gate, not a pre-merge gate. Code reaches `main` before the pipeline blocks it. Local pre-commit is the only way to catch findings before they land in the branch.
+GitHub Actions blocks PR merges and CodePipeline blocks post-merge — but both gates fire **after** the commit reaches GitHub. For most hooks this means local setup is a faster feedback loop. For **gitleaks specifically**, it is a security requirement:
 
-For most hooks this is a convenience (faster feedback loop). For **gitleaks specifically**, local enforcement is a security requirement:
-
-- **Without local gitleaks:** A commit with a secret reaches GitHub before the pipeline blocks it. The secret is in git history and must be scrubbed — a painful, often incomplete process.
+- **Without local gitleaks:** A commit with a secret reaches GitHub before any gate fires. The secret is in git history and must be scrubbed — a painful, often incomplete process even if the PR is blocked.
 - **With local gitleaks:** The commit is rejected before it leaves your machine. The secret never touches GitHub.
 
-**Recommendation:** Treat local pre-commit setup as mandatory, not optional, for any developer pushing to a repo protected by this module. Run `scripts/setup-dev.sh` (macOS) or `scripts/setup-dev.ps1` (Windows) as part of onboarding.
+**Recommendation:** Treat local pre-commit setup as mandatory for any developer on a repo protected by this module. Run `scripts/setup-dev.sh` (macOS) or `scripts/setup-dev.ps1` (Windows) as part of onboarding.
 
 ---
 
@@ -336,7 +372,7 @@ aws-devsecops-pipeline-module/
 │           └── buildspecs/    ← YAML templates per stage
 │               ├── scan.yml
 │               └── build.yml
-├── scanner-images/            ← Dockerfiles for ECR Public
+├── scanner-images/            ← Dockerfiles for ghcr.io
 │   ├── python/Dockerfile
 │   ├── java/Dockerfile
 │   ├── dotnet/Dockerfile
