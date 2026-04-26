@@ -238,7 +238,7 @@ Stage 3 is added via a Terraform `dynamic` block — it only exists in the pipel
 | Manual execution from console | Yes (Terraform does not disable this) |
 | CodePipeline stage retry | Yes (from the failed stage forward) |
 
-There is no PR pipeline in v1. All security gates run on merge to `main`. For pre-merge checks, the optional local pre-commit setup (via `scripts/setup-dev.sh`) provides equivalent feedback before pushing.
+CodePipeline triggers on merge to `main` only — it is the post-merge enforcement gate. Pre-merge gating is handled by the GitHub Actions workflow (`security-scan.yml`) which triggers on every push and pull_request. Both gates run the same tools via the same `.pre-commit-config.yaml`. See the GitHub Actions section above for branch protection setup.
 
 ---
 

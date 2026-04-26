@@ -476,7 +476,7 @@ README covers all required sections:
 - 8 skips: all KMS/cost-driven, each with explanation and `#checkov:skip` annotation applied inline in `main.tf`
 - Final result: 35 passed, 0 failed, 9 skipped
 
-### Story 4.3 — First Release Tag — pending scanner image push
+### Story 4.3 — First Release Tag ✓ Done — tagged v1.0.0 on 2026-04-26
 
 ```bash
 git tag v1.0.0

@@ -12,8 +12,8 @@ A reusable Terraform module that provisions an AWS-native security scanning pipe
 
 **Two artifacts:**
 
-1. **4 scanner Docker images** — hosted on ECR Public Gallery, pulled by CodeBuild at runtime with no authentication required
-2. **Terraform module** (`infra/modules/pipeline/`) — provisions CodePipeline, CodeBuild projects, S3 artifact bucket, SNS approval topic, and IAM roles in the consuming project's AWS account
+1. **4 scanner Docker images** — hosted on GitHub Container Registry (ghcr.io), pulled by CodeBuild at runtime with no authentication required
+2. **Terraform module** (`infra/modules/pipeline/`) — provisions CodePipeline, CodeBuild projects, S3 artifact bucket, CloudWatch log groups, and IAM roles in the consuming project's AWS account
 
 This repo contains no application code. The Flask demo app that consumes this module lives in a separate repository (`sample-python-app`).
 
@@ -312,7 +312,6 @@ For most hooks this is a convenience (faster feedback loop). For **gitleaks spec
 | CodePipeline | 1 free active pipeline/month | 1 pipeline per project |
 | CodeBuild | 100 min/month (`general1.small`) | ~8 min/run with S3 caching |
 | S3 | 5 GB storage, 20k GET, 2k PUT | Artifacts + cache + state |
-| SNS | 1M publishes/month | 1 email per pipeline run |
 | CloudWatch Logs | 5 GB ingestion/month | Build logs, 30-day retention |
 
 With S3 caching: approximately **12 full pipeline runs per month** within the free tier. Over-budget runs cost ~$0.04–$0.07 each (`$0.005/min × ~8 min`).
@@ -329,16 +328,14 @@ aws-devsecops-pipeline-module/
 ├── infra/
 │   └── modules/
 │       └── pipeline/          ← reusable Terraform module
-│           ├── main.tf        ← CodePipeline, CodeBuild, S3, SNS, CloudWatch
+│           ├── main.tf        ← CodePipeline, CodeBuild, S3, CloudWatch
 │           ├── variables.tf
 │           ├── outputs.tf
-│           ├── iam.tf         ← 3 CodeBuild IAM roles + 1 CodePipeline role
-│           ├── scanner_images.tf  ← locals: language → ECR Public image map
+│           ├── iam.tf         ← scan role + build role (optional) + codepipeline role
+│           ├── scanner_images.tf  ← locals: language → ghcr.io image map
 │           └── buildspecs/    ← YAML templates per stage
 │               ├── scan.yml
-│               ├── build.yml
-│               ├── plan.yml
-│               └── apply.yml
+│               └── build.yml
 ├── scanner-images/            ← Dockerfiles for ECR Public
 │   ├── python/Dockerfile
 │   ├── java/Dockerfile

@@ -65,8 +65,9 @@ When a consuming project calls `module "pipeline"`, the following AWS resources 
 | CodePipeline | `aws_codepipeline` | `main.tf` | 2 stages base; 3 stages with `enable_container_scan = true` |
 | S3 Artifact Bucket | `aws_s3_bucket` | `main.tf` | Versioning on; lifecycle 30-day object cleanup |
 | S3 Bucket Versioning | `aws_s3_bucket_versioning` | `main.tf` | Enabled |
-| S3 Lifecycle Rule | `aws_s3_bucket_lifecycle_configuration` | `main.tf` | Expire objects > 30 days |
-| S3 Bucket Policy | `aws_s3_bucket_policy` | `main.tf` | CodePipeline + CodeBuild read/write |
+| S3 Lifecycle Rule | `aws_s3_bucket_lifecycle_configuration` | `main.tf` | Expire objects > 30 days; abort incomplete multipart uploads after 1 day |
+| S3 Public Access Block | `aws_s3_bucket_public_access_block` | `main.tf` | All public access blocked |
+| S3 Encryption | `aws_s3_bucket_server_side_encryption_configuration` | `main.tf` | SSE-S3 (AES256) |
 | CodeBuild — Scan | `aws_codebuild_project` | `main.tf` | ghcr.io scanner image; `general1.small`; S3 cache |
 | CodeBuild — Build | `aws_codebuild_project` | `main.tf` | `enable_container_scan = true` only; AWS standard image; privileged=true; S3 cache |
 | IAM Role — Scan | `aws_iam_role` | `iam.tf` | S3 artifact read/write + CloudWatch (no ECR Public perms needed — ghcr.io is public) |
