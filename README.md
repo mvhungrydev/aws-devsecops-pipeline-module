@@ -78,9 +78,11 @@ Pre-built images, publicly pullable — no authentication required for CodeBuild
 
 Each image includes: checkov, gitleaks, Semgrep, pre-commit. The Python image also includes bandit.
 
-### First-Time Bootstrap (One-Time Manual Step)
+### First-Time Bootstrap (Module Maintainer Only)
 
-Scanner images must be built and pushed to GitHub Container Registry before any consuming project can run a pipeline. Run from this repo's root:
+> **If you are consuming this module, skip this section — the images are already live on ghcr.io and publicly pullable. No action needed.**
+
+This section is only relevant if you are maintaining the module and need to rebuild or republish the scanner images. Run from this repo's root:
 
 ```bash
 # 1. Create a GitHub PAT with write:packages scope
@@ -184,6 +186,16 @@ module "pipeline" {
 }
 ```
 
+**`terraform.tfvars` (minimum required values):**
+```hcl
+app_name                = "my-app"
+language                = "python"
+github_repo             = "your-org/my-app"
+codestar_connection_arn = "arn:aws:codeconnections:us-east-1:123456789012:connection/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+```
+
+A fully annotated example with all variables is in [`examples/complete/terraform.tfvars.example`](examples/complete/terraform.tfvars.example).
+
 **Deploy:**
 ```bash
 cd your-project/infra/envs/dev/
@@ -202,13 +214,15 @@ After `terraform apply`, push a commit to your configured `branch` to trigger th
 
 ### Step 3 — Set Up GitHub Actions
 
-Copy the workflow to your consuming project:
+Copy the workflow to your consuming project. You can download it directly from GitHub:
 
 ```bash
 mkdir -p .github/workflows
-cp /path/to/aws-devsecops-pipeline-module/.github/workflows/security-scan.yml \
-   .github/workflows/security-scan.yml
+curl -sSfL https://raw.githubusercontent.com/mvhungrydev/aws-devsecops-pipeline-module/main/.github/workflows/security-scan.yml \
+  -o .github/workflows/security-scan.yml
 ```
+
+Or copy it manually from [`/.github/workflows/security-scan.yml`](/.github/workflows/security-scan.yml) in this repo.
 
 Then enable branch protection:
 
@@ -222,7 +236,9 @@ Push any commit to trigger the first workflow run and confirm the check appears.
 
 ### Step 4 — Done
 
-No SNS subscription, no approval email, no Terraform state configuration needed. The pipeline is self-contained — consuming projects handle their own deployment after the pipeline produces a verified artifact.
+The pipeline is self-contained — no SNS subscription, no approval email needed. Consuming projects handle their own deployment after the pipeline produces a verified artifact.
+
+> **Note on Terraform state:** Your consuming project needs a backend to store Terraform state. The `examples/complete/main.tf` includes an S3 backend configuration — create an S3 bucket for state and update the `backend "s3"` block before running `terraform init`. See [Terraform state docs](https://developer.hashicorp.com/terraform/language/settings/backends/s3) if unfamiliar.
 
 ---
 
