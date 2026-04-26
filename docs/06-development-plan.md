@@ -12,7 +12,7 @@ No code is written until all 7 docs are reviewed and approved (Mike Velasco Spec
 
 Stories in this phase are procedural. No deep background required.
 
-### Story 0.1 — Directory Scaffold
+### Story 0.1 — Directory Scaffold ✓ Done
 
 Create the full directory structure with `.gitkeep` files in empty directories:
 
@@ -32,7 +32,7 @@ aws-devsecops-pipeline-module/
 
 Commit: `chore: initial directory scaffold`
 
-### Story 0.4 — GitHub Actions Workflow
+### Story 0.4 — GitHub Actions Workflow ✓ Done
 
 Create `.github/workflows/security-scan.yml` at the repo root. This workflow:
 - Triggers on every `push` and `pull_request` across all branches
@@ -51,7 +51,7 @@ Commit: `chore: add GitHub Actions security scan workflow`
 
 ---
 
-### Story 0.2 — `.pre-commit-config.yaml` Template
+### Story 0.2 — `.pre-commit-config.yaml` Template ✓ Done
 
 Create `.pre-commit-config.yaml` at the repo root. This file is the template that consuming projects copy. It must be functional in the context of a consuming project (not this module repo — this repo has no Python app to scan with bandit).
 
@@ -87,7 +87,7 @@ repos:
       - id: terraform_fmt
 ```
 
-### Story 0.3 — Setup Scripts
+### Story 0.3 — Setup Scripts ✓ Done
 
 Create `scripts/setup-dev.sh` (macOS/Linux):
 
@@ -140,7 +140,7 @@ All work in this phase happens in this repo (`aws-devsecops-pipeline-module/`). 
 
 **Verification step (`RUN ... && ... version`):** The final `RUN` in each Dockerfile verifies that tools installed correctly. If any tool is missing or broken, the Docker build fails immediately — catching errors before the image reaches ECR.
 
-### Story 1.1 — GitHub Container Registry Setup
+### Story 1.1 — GitHub Container Registry Setup ✓ Done (one-time machine setup)
 
 1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**
 2. Click **Generate new token (classic)**
@@ -155,7 +155,7 @@ echo $GITHUB_PAT | docker login ghcr.io --username mvhungrydev --password-stdin
 
 One-time setup per machine. Repositories are created automatically on first push — no pre-creation needed.
 
-### Story 1.2 — Python Scanner Image
+### Story 1.2 — Python Scanner Image ✓ Dockerfile done — push pending
 
 Create `scanner-images/python/Dockerfile`:
 
@@ -200,7 +200,7 @@ After push: GitHub → Packages → security-scanner-python → Package settings
 
 Verify: `docker pull ghcr.io/mvhungrydev/security-scanner-python:latest` (unauthenticated — confirms public visibility).
 
-### Story 1.3 — Java, dotnet, Node Scanner Images
+### Story 1.3 — Java, dotnet, Node Scanner Images ✓ Dockerfiles done — push pending
 
 Create identical Dockerfiles for the other 3 languages, omitting bandit:
 
@@ -275,7 +275,7 @@ locals {
 
 Validate: `terraform validate` from `infra/modules/pipeline/` — confirms HCL syntax is valid.
 
-### Story 2.3 — `iam.tf` (2–3 IAM Roles)
+### Story 2.3 — `iam.tf` (2–3 IAM Roles) ✓ Done
 
 Create IAM roles with `aws_iam_role_policy` inline policies:
 
@@ -287,7 +287,7 @@ IAM permissions reference: see `docs/03-technical-design.md` IAM Role Design sec
 
 No ECR Public permissions needed — ghcr.io scanner images are pulled as public images without IAM.
 
-### Story 2.4 — S3 Artifact Bucket + CodeBuild Projects
+### Story 2.4 — S3 Artifact Bucket + CodeBuild Projects ✓ Done
 
 In `main.tf`:
 
@@ -337,7 +337,7 @@ resource "aws_codebuild_project" "scan" {
 
 `count = var.enable_container_scan ? 1 : 0`, `privileged_mode = true`, AWS standard image `aws/codebuild/standard:7.0`, `ECR_REPO` and `AWS_REGION` env vars injected.
 
-### Story 2.5 — CloudWatch Log Groups + `outputs.tf`
+### Story 2.5 — CloudWatch Log Groups + `outputs.tf` ✓ Done
 
 **CloudWatch Log Groups:**
 
@@ -374,7 +374,7 @@ output "artifact_bucket_arn" {
 }
 ```
 
-### Story 2.6 — `aws_codepipeline` (2–3 Stages)
+### Story 2.6 — `aws_codepipeline` (2–3 Stages) ✓ Done
 
 ```hcl
 resource "aws_codepipeline" "this" {
@@ -435,7 +435,7 @@ resource "aws_codepipeline" "this" {
 }
 ```
 
-### Story 2.7 — Terraform Validation
+### Story 2.7 — Terraform Validation ✓ Done (35 passed, 0 failed, 9 skipped with justification)
 
 Run from `infra/modules/pipeline/`:
 
@@ -451,32 +451,55 @@ Fix any checkov findings that are not acceptable. Add `#checkov:skip=<rule>` inl
 
 ## Phase 3 — Integration Test
 
-The pipeline module cannot be tested in isolation — it requires a consuming project with a CodeStar Connection and (for container scan) a private ECR repo.
+**OUT OF SCOPE — Decision 2026-04-25**
 
-**Integration test target:** `sample-python-app`. After Phase 2 (pipeline module stories) and the corresponding Phase 2 (core infrastructure stories) in `sample-python-app`, wire the pipeline module in and run it end-to-end.
-
-See `sample-python-app/docs/06-development-plan.md` — Story 3.6 "Wire Pipeline into Dev Environment" is the integration test entry point.
+Wiring the pipeline module into `sample-python-app` is out of scope for this repo. The goal of this project is a reusable, standalone module — not a vertically integrated demo. The `examples/complete/` directory provides a fully documented consumption example covering all variables. End-to-end integration testing is the responsibility of the consuming project.
 
 ---
 
 ## Phase 4 — Documentation and Release Tag
 
-### Story 4.1 — `README.md`
+### Story 4.1 — `README.md` ✓ Done
 
-Complete the module repo README with these sections:
+README covers all required sections:
+1. Scanner image bootstrap — step-by-step manual push to ghcr.io
+2. SAST gap documentation — Semgrep community vs taint analysis, affected languages, production recommendations
+3. Local dev setup — `scripts/setup-dev.sh` and `setup-dev.ps1`
+4. How to consume the module — `source` reference with base and container scan examples
+5. Module input variables reference table
+6. Module versioning — git tag convention, `terraform init -upgrade` process
 
-1. **Scanner image bootstrap** — step-by-step manual push to ghcr.io
-2. **SAST gap documentation** — Semgrep community vs taint analysis, affected languages, production recommendations
-3. **Local dev setup** — `scripts/setup-dev.sh` and `setup-dev.ps1`, why gitleaks locally matters
-4. **How to consume the module** — `source` reference with examples (base + container scan)
-5. **Module input variables reference table** — all variables, types, defaults, descriptions
-6. **Module versioning** — git tag convention, `terraform init -upgrade` process
+### Story 4.2 — Checkov Findings Documentation ✓ Done
 
-### Story 4.2 — First Release Tag
+`docs/10-checkov-findings.md` created 2026-04-25. Documents all 9 findings from the Phase 2 checkov run:
+- 1 fix applied: `abort_incomplete_multipart_upload` added to S3 lifecycle rule
+- 8 skips: all KMS/cost-driven, each with explanation and `#checkov:skip` annotation applied inline in `main.tf`
+- Final result: 35 passed, 0 failed, 9 skipped
+
+### Story 4.3 — First Release Tag — pending scanner image push
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-After tagging, update `sample-python-app/infra/envs/dev/main.tf` to reference `?ref=v1.0.0` and run `terraform init`.
+**Prerequisite:** All 4 scanner images must be pushed to ghcr.io and set to Public before tagging. The `scanner_images.tf` locals map references these image URIs — the tag is only valid once the images exist at those URIs.
+
+```bash
+# Build and push all 4 images (run from repo root)
+docker build -t ghcr.io/mvhungrydev/security-scanner-python:latest scanner-images/python/
+docker push ghcr.io/mvhungrydev/security-scanner-python:latest
+
+docker build -t ghcr.io/mvhungrydev/security-scanner-java:latest scanner-images/java/
+docker push ghcr.io/mvhungrydev/security-scanner-java:latest
+
+docker build -t ghcr.io/mvhungrydev/security-scanner-dotnet:latest scanner-images/dotnet/
+docker push ghcr.io/mvhungrydev/security-scanner-dotnet:latest
+
+docker build -t ghcr.io/mvhungrydev/security-scanner-node:latest scanner-images/node/
+docker push ghcr.io/mvhungrydev/security-scanner-node:latest
+
+# After all 4 are pushed and set to Public on ghcr.io
+git tag v1.0.0
+git push origin v1.0.0
+```
