@@ -285,7 +285,7 @@ Adding these tools requires a dedicated compile-and-scan stage (they need byteco
 | `github_repo` | string | — | Yes | GitHub repo in `owner/repo` format |
 | `branch` | string | `"main"` | No | Pipeline trigger branch |
 | `codestar_connection_arn` | string | — | Yes | ARN of the Available CodeStar Connection to GitHub |
-| `enable_container_scan` | bool | `false` | No | Adds Build + Trivy + ECR Push stage when `true` |
+| `enable_container_scan` | bool | `false` | No | Adds Build + Trivy + ECR Push stage when `true`. If set to `true` without `ecr_repo_name`, Terraform will error at `plan` time with a clear precondition message |
 | `ecr_repo_name` | string | `""` | No | Required when `enable_container_scan = true` — must match existing ECR repo name |
 | `dockerfile_path` | string | `"."` | No | Directory containing your Dockerfile, relative to repo root. Required when `enable_container_scan = true` |
 | `aws_region` | string | `"us-east-1"` | No | AWS region for all resources |
@@ -330,18 +330,29 @@ terraform plan
 
 ## Local Developer Setup
 
-Copy `.pre-commit-config.yaml` from this repo to your consuming project's root, then run the setup script.
+From your consuming project's root, download the pre-commit config and setup script:
+
+```bash
+# .pre-commit-config.yaml — defines all hooks (gitleaks, bandit, Semgrep, checkov, terraform fmt)
+curl -sSfL https://raw.githubusercontent.com/mvhungrydev/aws-devsecops-pipeline-module/main/.pre-commit-config.yaml \
+  -o .pre-commit-config.yaml
+```
+
+Then run the setup script:
 
 ### macOS / Linux
 
 ```bash
-./scripts/setup-dev.sh
+curl -sSfL https://raw.githubusercontent.com/mvhungrydev/aws-devsecops-pipeline-module/main/scripts/setup-dev.sh \
+  -o setup-dev.sh && chmod +x setup-dev.sh && ./setup-dev.sh && rm setup-dev.sh
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-.\scripts\setup-dev.ps1
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mvhungrydev/aws-devsecops-pipeline-module/main/scripts/setup-dev.ps1" -OutFile setup-dev.ps1
+.\setup-dev.ps1
+Remove-Item setup-dev.ps1
 ```
 
 Both scripts install `pre-commit` and register hooks in `.git/hooks/`. Hooks then run automatically on every `git commit`.
@@ -353,7 +364,7 @@ GitHub Actions blocks PR merges and CodePipeline blocks post-merge — but both 
 - **Without local gitleaks:** A commit with a secret reaches GitHub before any gate fires. The secret is in git history and must be scrubbed — a painful, often incomplete process even if the PR is blocked.
 - **With local gitleaks:** The commit is rejected before it leaves your machine. The secret never touches GitHub.
 
-**Recommendation:** Treat local pre-commit setup as mandatory for any developer on a repo protected by this module. Run `scripts/setup-dev.sh` (macOS) or `scripts/setup-dev.ps1` (Windows) as part of onboarding.
+**Recommendation:** Treat local pre-commit setup as mandatory for any developer on a repo protected by this module. Use the `curl` commands above as part of onboarding.
 
 ---
 
@@ -377,6 +388,10 @@ aws-devsecops-pipeline-module/
 ├── .github/
 │   └── workflows/
 │       └── security-scan.yml  ← GitHub Actions workflow (copy to consuming projects)
+├── examples/
+│   └── complete/              ← fully worked wiring example — copy to your infra/envs/dev/
+│       ├── main.tf
+│       └── terraform.tfvars.example
 ├── infra/
 │   └── modules/
 │       └── pipeline/          ← reusable Terraform module
