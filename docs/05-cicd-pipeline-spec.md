@@ -100,13 +100,13 @@ jobs:
 To make the GitHub Actions check a hard gate on PRs:
 
 1. GitHub → repo → **Settings** → **Branches** → **Add branch protection rule**
-2. Branch name pattern: `main`
+2. Branch name pattern: match your `branch` variable value (e.g. `main`, `develop`)
 3. Enable: **Require a pull request before merging**
 4. Enable: **Require status checks to pass before merging**
 5. Search for and add: `Security Scan` (the job name from the workflow)
 6. Enable: **Restrict who can push to matching branches** → only allow merges via PR
 
-After this, no PR can merge to `main` until the `security-scan` workflow passes.
+After this, no PR can merge to the protected branch until the `security-scan` workflow passes.
 
 ### Consuming Projects
 
